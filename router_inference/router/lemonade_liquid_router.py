@@ -16,12 +16,13 @@ public benchmarks and label-free agreement statistics — no RouterArena labels
 were used to tune anything):
 
   code-class prompt (no options, no boxed request) -> gemini-3-flash-preview
-  MCQ: the two on-device votes are taken first; when they agree, the submitted
-       response is that local answer and the cloud model is never called (its
-       vote could not overturn a 2-of-3 majority). Only when the locals disagree
-       is gemini-3-flash-preview called to break the tie; the submitted response
-       comes from a majority member, preferring the local models; no majority ->
-       gemini-3-flash-preview
+  MCQ: the two on-device votes are taken first; when they agree, that local
+       answer is submitted and the cloud model is never called. When they
+       disagree (or one abstains), gemini-3-flash-preview decides and its own
+       response is submitted and billed -> the cloud tokens charged equal the
+       cloud tokens actually spent on the query. (A 2-of-3 majority could only
+       ever form around the cloud vote, so submitting its answer is the same
+       graded letter the former tri-vote produced.)
   free-answer: the local DeepSeek answer is kept when the local Qwen answer
        corroborates it (exact match or token-F1 >= 0.5 on the extracted final
        answers). When either side produced no boxed answer, the comparison ran
@@ -41,7 +42,6 @@ import math
 import os
 import re
 import urllib.request
-from collections import Counter
 from typing import TYPE_CHECKING, Optional
 
 from router_inference.router.base_router import BaseRouter
@@ -121,31 +121,18 @@ class LemonadeLiquidRouter(BaseRouter):
         r_ds4 = self._infer(self.LOCAL_DS4, query)
         r_qwen = self._infer(self.LOCAL_QWEN, query)
 
-        if "Options:" in query:  # MCQ: local-first majority vote
+        if "Options:" in query:  # MCQ: local agreement, else cloud decides
             l_ds4 = _letter(r_ds4.get("response"))
             l_qwen = _letter(r_qwen.get("response"))
-            # Once the two on-device voters agree on a letter, that letter
-            # already holds the 2-of-3 majority — the cloud vote cannot change
-            # the outcome, so gemini-3-flash-preview is never called (and never
-            # billed) here. The submitted response is the local DS4 member,
-            # identical to what the full tri-vote returned in this case.
+            # The two on-device voters settle the MCQ when they agree: the local
+            # answer is submitted and the cloud model is never called.
             if l_ds4 and l_ds4 == l_qwen:
                 return self.LOCAL_DS4
-            # The locals disagree (or one abstained): only now is the cloud vote
-            # decisive, so it is called and the 2-of-3 majority is formed.
-            r_g3 = self._infer(self.CLOUD_G3FP, query)
-            letters = {
-                self.LOCAL_DS4: l_ds4,
-                self.LOCAL_QWEN: l_qwen,
-                self.CLOUD_G3FP: _letter(r_g3.get("response")),
-            }
-            votes = Counter(v for v in letters.values() if v)
-            if votes:
-                top, n = votes.most_common(1)[0]
-                if n >= 2:
-                    for model in (self.LOCAL_DS4, self.LOCAL_QWEN, self.CLOUD_G3FP):
-                        if letters[model] == top:
-                            return model
+            # They disagree (or one abstained) -> the cloud model decides and its
+            # own response is submitted and billed. Because a 2-of-3 majority in
+            # this case can only form around the cloud vote, its letter always
+            # equals that majority letter, so this submits the same graded answer
+            # the tri-vote did while charging exactly the cloud tokens spent.
             return self.CLOUD_G3FP
 
         # free-answer: corroboration is judged on the extracted final answers
